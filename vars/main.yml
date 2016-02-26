@@ -1,0 +1,5 @@
+---
+# vars file for ansible-icinga2-client
+
+icinga2_server: icinga2.localdomain
+ticket_salt: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX

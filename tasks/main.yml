@@ -1,0 +1,74 @@
+---
+# tasks file for ansible-icinga2-client
+
+- name: selinux permissive
+  selinux: policy=targeted state=permissive
+
+- name: firewalld stopped
+  service: name=firewalld state=stopped enabled=no
+
+- name: deploy ICINGA-release.repo
+  copy: src=ICINGA-release.repo dest=/etc/yum.repos.d/ICINGA-release.repo
+
+- name: import ICINGA GPG KEY
+  rpm_key: key=http://packages.icinga.org/icinga.key state=present
+
+- name: install icinga2-bin
+  yum: name=icinga2-bin state=present
+
+- name: create /etc/icinga2/pki directory
+  file: path=/etc/icinga2/pki state=directory owner=icinga group=icinga
+
+- name: Generate a new local self-signed certificate.
+  shell: >
+    icinga2 pki new-cert --cn {{ ansible_fqdn }}
+    --key /etc/icinga2/pki/{{ ansible_fqdn }}.key
+    --cert /etc/icinga2/pki/{{ ansible_fqdn }}.crt
+    creates=/etc/icinga2/pki/{{ ansible_fqdn }}.key
+
+- name: Request the master certificate from the master host (icinga2-node1.localdomain) and store it as trusted-master.crt. Review it and continue.
+  shell: >
+    icinga2 pki save-cert --key /etc/icinga2/pki/{{ ansible_fqdn }}.key
+    --cert /etc/icinga2/pki/{{ ansible_fqdn }}.crt
+    --trustedcert /etc/icinga2/pki/trusted-master.crt
+    --host {{ icinga2_server }}
+    creates=/etc/icinga2/pki/trusted-master.crt
+
+- name: generate ticket
+  shell: >
+    icinga2 pki ticket --cn {{ ansible_fqdn }} --salt {{ ticket_salt }}
+    creates=/etc/icinga2/pki/ca.crt
+  register: client_ticket
+  changed_when: false
+
+# - name: Send the self-signed certificate to the master host using the ticket number and receive a CA signed certificate and the master's ca.crt certificate. Specify the path to the previously stored trusted master certificate.
+#   shell: >
+#     icinga2 pki request --host {{ icinga2_server }} --port 5665
+#     --ticket {{ client_ticket.stdout }}
+#     --key /etc/icinga2/pki/{{ ansible_fqdn }}.key
+#     --cert /etc/icinga2/pki/{{ ansible_fqdn }}.crt
+#     --trustedcert /etc/icinga2/pki/trusted-master.crt
+#     --ca /etc/icinga2/pki/ca.crt
+#     creates=/etc/icinga2/pki/ca.crt
+
+- name: check if node setup needs happen
+  shell: grep {{ ansible_fqdn }} /etc/icinga2/constants.conf
+  register: node_setup
+  changed_when: false
+  ignore_errors: true
+
+- name: Continue with the additional node setup steps. Specify a local endpoint and zone name (icinga2-node2.localdomain) and set the master host (icinga2-node1.localdomain) as parent zone configuration. Specify the path to the previously stored trusted master certificate.
+  shell: >
+    icinga2 node setup --ticket {{ client_ticket.stdout }}
+    --endpoint {{ icinga2_server }}
+    --zone {{ ansible_fqdn }}
+    --master_host {{ icinga2_server }}
+    --trustedcert /etc/icinga2/pki/trusted-master.crt
+  when: node_setup.rc != 0
+
+- name: restart icinga2
+  service: name=icinga2 state=restarted
+  when: node_setup.rc != 0
+
+- name: install nagios-plugins-all
+  yum: name=nagios-plugins-all state=present
